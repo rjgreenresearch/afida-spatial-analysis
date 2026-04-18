@@ -1,0 +1,15 @@
+# ==============================================================================
+# afida-spatial-analysis .gitignore
+# ==============================================================================
+# Prevents committing cached primary source data, production output,
+# primary-source research documents, and development artifacts.
+# ==============================================================================
+
+# ---- Primary-Source Research Documents ----
+# PDFs, ZIPs, and Excel files from Texas SOS, AFIDA, EDGAR downloads.
+# These are your research inputs, not distributable code.
+*.pdf
+*.zip
+*.xlsx
+*.xls
+*.csv
