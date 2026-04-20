@@ -277,22 +277,18 @@ def load_afida_holdings(filepath, country_filter=None):
     """
     df = pd.read_csv(filepath, dtype={'fips': str}, encoding='latin-1')
     
-    # Normalize column names — match first exact-ish hit per target only
+    # Normalize column names (adapt as needed for actual AFIDA format)
     col_map = {}
-    mapped_targets = set()
-    # Priority order: exact matches first, then fuzzy
-    target_patterns = [
-        ('fips',        lambda c: c == 'fips'),
-        ('country',     lambda c: c == 'country' or c == 'country_normalized'),
-        ('acreage',     lambda c: c in ('acres', 'acreage', 'number of acres', 'number_of_acres')),
-        ('entity_name', lambda c: c in ('owner_name', 'entity_name', 'owner name 1/')),
-    ]
-    for target, matcher in target_patterns:
-        for col in df.columns:
-            if target not in mapped_targets and matcher(col.lower().strip()):
-                col_map[col] = target
-                mapped_targets.add(target)
-                break
+    for col in df.columns:
+        cl = col.lower().strip()
+        if 'fips' in cl:
+            col_map[col] = 'fips'
+        elif 'country' in cl:
+            col_map[col] = 'country'
+        elif 'acre' in cl:
+            col_map[col] = 'acreage'
+        elif 'entity' in cl or 'owner' in cl or 'name' in cl:
+            col_map[col] = 'entity_name'
     df = df.rename(columns=col_map)
     
     if country_filter:
@@ -596,6 +592,132 @@ def run_installation_subset_sensitivity(china_holdings, installation_sets,
     return pd.DataFrame(results)
 
 
+def run_data_summary(all_holdings, china_holdings, installations, legacy,
+                     centroids, output_dir):
+    """Table 1: Data summary and descriptive statistics."""
+    print("\n[Table 1] Data summary...")
+    acres_col = next((c for c in all_holdings.columns if 'acre' in c.lower()), None)
+    country_col = next((c for c in all_holdings.columns
+                        if 'country' in c.lower() and 'code' not in c.lower()
+                        and 'norm' not in c.lower()), 'country_normalized')
+    rows = [
+        {'category':'AFIDA','metric':'Total holdings','value':str(len(all_holdings))},
+        {'category':'AFIDA','metric':'Unique countries','value':str(all_holdings[country_col].nunique())},
+        {'category':'AFIDA','metric':'Unique FIPS counties','value':str(all_holdings['fips'].nunique())},
+    ]
+    if acres_col:
+        rows.append({'category':'AFIDA','metric':'Total acres',
+                     'value':f"{all_holdings[acres_col].astype(float,errors='ignore').sum():,.0f}"})
+    rows.append({'category':'China','metric':'County observations','value':str(len(china_holdings))})
+    rows.append({'category':'Installations','metric':'Appendix A CONUS','value':str(len(installations))})
+    rows.append({'category':'Installations','metric':'Legacy database','value':str(len(legacy))})
+    rows.append({'category':'Geo','metric':'County centroids','value':str(len(centroids))})
+    if len(china_holdings) > 0 and len(installations) > 0:
+        dists = min_distances(china_holdings, installations)
+        rows.extend([
+            {'category':'China Dist','metric':'Mean (mi)','value':f"{np.mean(dists):.1f}"},
+            {'category':'China Dist','metric':'Median (mi)','value':f"{np.median(dists):.1f}"},
+            {'category':'China Dist','metric':'Min (mi)','value':f"{np.min(dists):.1f}"},
+            {'category':'China Dist','metric':'Max (mi)','value':f"{np.max(dists):.1f}"},
+            {'category':'China Dist','metric':'Within 50 mi',
+             'value':f"{int(np.sum(dists<=50))} ({np.sum(dists<=50)/len(dists)*100:.1f}%)"},
+            {'category':'China Dist','metric':'Within 100 mi',
+             'value':f"{int(np.sum(dists<=100))} ({np.sum(dists<=100)/len(dists)*100:.1f}%)"},
+        ])
+    result = pd.DataFrame(rows)
+    out_path = os.path.join(output_dir, 'data_summary.csv')
+    result.to_csv(out_path, index=False)
+    print(result.to_string(index=False))
+    print(f"\n  -> {out_path}")
+    return result
+
+
+def run_panel_analysis(afida_path, centroids_df, installations_df,
+                       output_dir, n_iter=MC_COMPARATIVE):
+    """Table 5: Panel analysis (2022-2024)."""
+    print("\n[Table 5] Panel analysis (2022-2024)...")
+    afida = pd.read_csv(afida_path, dtype={'fips': str}, encoding='latin-1', comment='#')
+    year_col = next((c for c in afida.columns if 'year' in c.lower()), None)
+    china_col = 'is_china' if 'is_china' in afida.columns else None
+    if year_col is None or china_col is None:
+        print(f"  WARNING: Missing year ({year_col}) or china ({china_col}) column.")
+        return pd.DataFrame()
+    china_all = afida[afida[china_col] == 'Y'].copy()
+    china_all[year_col] = pd.to_numeric(china_all[year_col], errors='coerce')
+    acres_col = next((c for c in china_all.columns if 'acre' in c.lower()), None)
+    results = []
+    for year in [2022, 2023, 2024]:
+        year_df = china_all[china_all[year_col] <= year]
+        county_fips = year_df['fips'].unique()
+        county_df = centroids_df[centroids_df['fips'].isin(county_fips)].copy()
+        if len(county_df) < 2:
+            continue
+        dists = min_distances(county_df, installations_df)
+        obs50 = int(np.sum(dists <= 50))
+        total_acres = year_df[acres_col].astype(float, errors='ignore').sum() if acres_col else 0
+        results.append({
+            'year': year, 'n_counties': len(county_df),
+            'total_acres': round(total_acres, 0),
+            'mean_distance': round(np.mean(dists), 1),
+            'median_distance': round(np.median(dists), 1),
+            'within_50mi': obs50,
+            'pct_within_50mi': round(obs50 / len(county_df) * 100, 1),
+        })
+    result = pd.DataFrame(results)
+    if len(result) > 0:
+        out_path = os.path.join(output_dir, 'panel_china_2022_2024.csv')
+        result.to_csv(out_path, index=False)
+        print(result.to_string(index=False))
+        print(f"\n  -> {out_path}")
+    else:
+        print("  No panel data generated.")
+    return result
+
+
+def run_ownership_concentration(afida_path, centroids_df, installations_df,
+                                 output_dir):
+    """Table 6: Ownership concentration (HHI and top entities)."""
+    print("\n[Table 6] Ownership concentration...")
+    afida = pd.read_csv(afida_path, dtype={'fips': str}, encoding='latin-1', comment='#')
+    china = afida[afida.get('is_china', pd.Series(dtype=str)) == 'Y'].copy() if 'is_china' in afida.columns else pd.DataFrame()
+    if len(china) == 0:
+        print("  WARNING: No Chinese holdings found.")
+        return pd.DataFrame(), 0
+    acres_col = next((c for c in china.columns if 'acre' in c.lower()), None)
+    name_col = next((c for c in china.columns if 'owner' in c.lower() and 'name' in c.lower()), None)
+    if not acres_col or not name_col:
+        print(f"  WARNING: Missing acres ({acres_col}) or name ({name_col}) column.")
+        return pd.DataFrame(), 0
+    china[acres_col] = pd.to_numeric(china[acres_col], errors='coerce').fillna(0)
+    total_acres = china[acres_col].sum()
+    entity = china.groupby(name_col).agg(
+        holdings=(acres_col, 'count'), total_acres=(acres_col, 'sum'),
+        counties=('fips', 'nunique'),
+    ).reset_index().sort_values('total_acres', ascending=False)
+    entity['pct_total'] = (entity['total_acres'] / total_acres * 100).round(1)
+    shares = entity['total_acres'] / total_acres
+    hhi = int((shares ** 2).sum() * 10000)
+    top = entity.head(10).copy()
+    nearest = []
+    for _, ent in top.iterrows():
+        fips_list = china[china[name_col] == ent[name_col]]['fips'].unique()
+        ent_counties = centroids_df[centroids_df['fips'].isin(fips_list)]
+        if len(ent_counties) > 0 and len(installations_df) > 0:
+            nearest.append(round(np.min(min_distances(ent_counties, installations_df)), 1))
+        else:
+            nearest.append(None)
+    top['nearest_installation_miles'] = nearest
+    out_path = os.path.join(output_dir, 'ownership_concentration.csv')
+    top.to_csv(out_path, index=False)
+    print(f"  HHI: {hhi}")
+    print(f"  Total entities: {len(entity)}, Total acres: {total_acres:,.0f}")
+    for _, r in top.iterrows():
+        print(f"    {r[name_col]:<40} {r['total_acres']:>10,.0f} ac  "
+              f"({r['pct_total']:>5.1f}%)  nearest: {r['nearest_installation_miles']} mi")
+    print(f"\n  -> {out_path}")
+    return top, hhi
+
+
 # =============================================================================
 # CLI ENTRY POINT
 # =============================================================================
@@ -794,10 +916,7 @@ def main():
     if len(centroids) == 0:
         print("ERROR: County centroids file is empty or contains only comments.")
         print("       You need the NOAA c_16ap26 extraction, not the stub file.")
-        print("       Run: python -c ")
-        print("         import shapefile, csv")
-        print("         sf = shapefile.Reader('path/to/c_16ap26')")
-        print("         ...extract fips,latitude,longitude...")
+        print("       Extract with pyshp: fips, latitude, longitude columns required.")
         sys.exit(1)
     if 'fips' not in centroids.columns:
         # Try to detect the FIPS column
@@ -835,6 +954,11 @@ def main():
     
     os.makedirs(args.output, exist_ok=True)
     
+    # -- Table 1: Data summary --
+    # Load full AFIDA for summary stats
+    all_holdings = pd.read_csv(args.afida, dtype={'fips': str}, encoding='latin-1', comment='#')
+    t1 = run_data_summary(all_holdings, china, aa_conus, legacy, centroids, args.output)
+    
     # -- Table 2: Primary China multi-threshold (Appendix A) --
     print("\n[Table 2] China multi-threshold (Appendix A, N=10,000)...")
     t2 = run_china_multithreshold(china, aa_conus, MC_PRIMARY)
@@ -858,6 +982,12 @@ def main():
     t4 = run_installation_subset_sensitivity(china, inst_sets)
     t4.to_csv(os.path.join(args.output, 'installation_subset_sensitivity.csv'), index=False)
     print(t4.to_string(index=False))
+    
+    # -- Table 5: Panel analysis (2022-2024) --
+    t5 = run_panel_analysis(args.afida, centroids, aa_conus, args.output)
+    
+    # -- Table 6: Ownership concentration --
+    t6_top, t6_hhi = run_ownership_concentration(args.afida, centroids, aa_conus, args.output)
     
     # -- Table 7: Part 3 ICBM missile field analysis --
     t7 = run_part3_analysis(args.afida, args.centroids, args.output)
