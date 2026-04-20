@@ -276,19 +276,22 @@ def load_afida_holdings(filepath, country_filter=None):
     User must adapt column names to match their AFIDA spreadsheet format.
     """
     df = pd.read_csv(filepath, dtype={'fips': str}, encoding='latin-1')
-    
-    # Normalize column names (adapt as needed for actual AFIDA format)
+
+    # Normalize column names — match first exact-ish hit per target only
     col_map = {}
-    for col in df.columns:
-        cl = col.lower().strip()
-        if 'fips' in cl:
-            col_map[col] = 'fips'
-        elif 'country' in cl:
-            col_map[col] = 'country'
-        elif 'acre' in cl:
-            col_map[col] = 'acreage'
-        elif 'entity' in cl or 'owner' in cl or 'name' in cl:
-            col_map[col] = 'entity_name'
+    mapped_targets = set()
+    target_patterns = [
+        ('fips',        lambda c: c == 'fips'),
+        ('country',     lambda c: c == 'country' or c == 'country_normalized'),
+        ('acreage',     lambda c: c in ('acres', 'acreage', 'number of acres', 'number_of_acres')),
+        ('entity_name', lambda c: c in ('owner_name', 'entity_name', 'owner name 1/')),
+    ]
+    for target, matcher in target_patterns:
+        for col in df.columns:
+            if target not in mapped_targets and matcher(col.lower().strip()):
+                col_map[col] = target
+                mapped_targets.add(target)
+                break
     df = df.rename(columns=col_map)
     
     if country_filter:
