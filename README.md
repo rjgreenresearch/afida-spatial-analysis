@@ -242,7 +242,7 @@ Direction: **Expansion + Diffusion** — acreage +2.0%, counties +9.4%, mean dis
 
 ## Data Sources
 
-See [DATA_SOURCES.md](DATA_SOURCES.md) for complete citation information, download instructions, and licence terms for all required data files. Note: the MIRTA DoD Sites Boundaries dataset (DataLumos 239599, DOI: 10.3886/E239599V1) requires acceptance of DataLumos Terms of Use and citation notification to bibliography@icpsr.umich.edu upon publication.
+See [DATA_SOURCES.md](data_sources.md) for complete citation information, download instructions, and licence terms for all required data files. Note: the MIRTA DoD Sites Boundaries dataset (DataLumos 239599, DOI: 10.3886/E239599V1) requires acceptance of DataLumos Terms of Use and citation notification to bibliography@icpsr.umich.edu upon publication.
 
 ---
 
