@@ -6,155 +6,220 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/downloads/)
 [![Data: USDA Primary Source](https://img.shields.io/badge/data-USDA%20primary%20source-brightgreen.svg)]()
 
-Companion code for: Green, R.J. (2026). "Spatial Clustering of Foreign Agricultural Acquisitions Near U.S. Military Installations: Comparative Evidence from USDA Primary Data." [SSRN](https://ssrn.com/author=10825096).
+Companion code for:
 
-**Author:** Robert J. Green · [robert@rjgreenresearch.org](mailto:robert@rjgreenresearch.org) · [ORCID: 0009-0002-9097-1021](https://orcid.org/0009-0002-9097-1021) · [www.rjgreenresearch.org](https://www.rjgreenresearch.org)
+> Green, R.J. (2026). "Spatial Clustering of Foreign Agricultural Acquisitions Near U.S. Military Installations: Comparative Evidence from USDA Primary Data and Implications for Land Use Governance." *Land Use Policy* (under review). SSRN: https://doi.org/10.2139/ssrn.6454202
+
+**Author:** Robert J. Green · robert@rjgreenresearch.org · ORCID: 0009-0002-9097-1021 · www.rjgreenresearch.org
 
 ---
 
 ## The Finding
 
-Chinese-attributed agricultural holdings in the USDA's own AFIDA data cluster near U.S. military installations at **3.4× random expectation** at 50 miles (p < 0.001). Against nuclear-capable installations (ICBM fields, bomber bases, submarine bases, DOE weapons complex), enrichment reaches **12.7×**.
+Chinese-attributed agricultural holdings in the USDA's own AFIDA data cluster near U.S. military installations at **2.4× random expectation** at 50 miles (p < 0.001) against the full 221-site CFIUS Appendix A database. When weighted by acreage, enrichment rises to **3.58×** — indicating the dominant land mass, not merely county count, drives the proximity pattern.
 
-The critical insight is comparative: **all** foreign agricultural holdings exhibit some clustering (allied-nation average: 1.8×), reflecting the co-location of military sites and farmland in rural areas. But the Chinese differential — 3.4× versus the 1.8× allied baseline — cannot be explained by agricultural geography alone. Brazil, the null control, shows 1.0× (exactly random).
+The finding is comparative: **all** foreign agricultural holdings exhibit some clustering (allied-nation average: 1.8×), reflecting the co-location of military sites and farmland in rural areas. China's 2.4× unweighted / 3.58× acreage-weighted enrichment exceeds the allied baseline by a margin that cannot be attributed to agricultural geography. Brazil (null control) shows 1.1× (not significant, p = 0.48).
 
-This is the first formal spatial hypothesis test applied to this policy-relevant question. Despite active federal legislation (the PASS Act), CFIUS expansion, and 26 state-level restrictions, no prior peer-reviewed study had tested whether the proximity pattern exceeds random chance.
+Against the legacy 70-site national security database — which adds DOE nuclear weapons complex sites, defence contractors, and intelligence community headquarters not on CFIUS Appendix A — enrichment reaches **3.4×** (confirmed independently by `webb_analysis.py`).
+
+Panel analysis (2022–2024) finds **expansion and diffusion**: acreage grew 2.0%, county presence grew 9.4%, and mean distance to installations increased 1.1 miles. State-level bans and two CFIUS expansions have not reduced the aggregate Chinese-attributed agricultural footprint.
+
+Part 3 ICBM missile field analysis finds **704 foreign holdings in 42 of 48 missile field counties**, with Chinese-linked holdings present in Weld County, Colorado (90th Missile Wing, Warren AFB).
 
 ---
 
-## Quick Start
+## Repository Structure
 
-### Requirements
+| File | Description |
+|------|-------------|
+| `data_prep.py` | Data preparation: MIRTA GeoJSON → installation database; AFIDA Excel → holdings CSV; Part 1/2/3 classification merge |
+| `spatial_analysis_primary.py` | Primary analysis: dual-database MC testing, multi-country comparison, Part 3 ICBM analysis, vectorised Haversine |
+| `webb_analysis.py` | Legacy 70-site analysis: original MC framework, robustness checks, independent 3.4× confirmation |
+| `afida_parser.py` | AFIDA Excel parsing and normalisation utilities |
+| `article3_cfius_analysis.py` | Article 3 regulatory perimeter pipeline (companion to JIEL paper) |
+| `data/installations_71.csv` | 70-site legacy national security installation database |
+| `processed/appendix_a_part_classification.csv` | Part 1/2/3 classification for 275 CFIUS Appendix A sites |
+
+---
+
+## Requirements
 
 ```bash
 pip install numpy pandas openpyxl
 ```
 
-### Reproduce Article 1 Results
+No GIS libraries required. All spatial computation uses vectorised Haversine (numpy broadcasting).
+
+---
+
+## Step 1 — Data Preparation (`data_prep.py`)
+
+Run once whenever you update the AFIDA or MIRTA source data.
+
+### Required input files (download from primary sources — not included)
+
+| File | Source |
+|------|--------|
+| `AFIDACurrentHoldingsYR2024.xlsx` | USDA FSA: fsa.usda.gov/resources/economic-policy-analysis/afida |
+| `mirta-dod-sites-points-geojson.geojson` | DoD MIRTA / DataLumos Project 239602 |
+| County centroids | NOAA: weather.gov/gis/Counties — or Census CenPop2020 |
+
+### Full pipeline
 
 ```bash
-# Download primary data (not included in repo — see Data Sources below)
-# 1. AFIDA 2024 Excel from USDA FSA
-# 2. County centroids from NOAA (c_16ap26.zip)
-
-# Run the primary analysis
-python webb_analysis.py \
-    --afida AFIDACurrentHoldingsYR2024.xlsx \
-    --centroids c_16ap26/ \
-    --iterations 10000 \
-    --seed 20260118
-
-# Run with multi-country comparison
-python webb_analysis.py \
-    --afida AFIDACurrentHoldingsYR2024.xlsx \
-    --centroids c_16ap26/ \
-    --all-countries \
-    --iterations 5000
-
-# Run all four robustness checks
-python robustness_checks.py \
-    --afida AFIDACurrentHoldingsYR2024.xlsx \
-    --centroids c_16ap26/
+python data_prep.py \
+    --mirta data/mirta-dod-sites-points-geojson.geojson \
+    --afida data/AFIDACurrentHoldingsYR2024.xlsx \
+    --legacy data/installations_71.csv \
+    --output processed/
 ```
 
----
+Five steps run automatically:
 
-## Methodology
+1. Convert MIRTA GeoJSON → `processed/cfius_appendix_a_geocoded.csv` (247 sites, 221 CONUS)
+2. Merge legacy installations (DOE/IC sites not in MIRTA)
+3. Convert AFIDA Excel → `processed/afida_2024_holdings.csv`
+4. Generate county centroid stub (skips silently if real data already present)
+5. Merge Part 1/2/3 classification from `processed/appendix_a_part_classification.csv`
 
-### Null Hypothesis
+**Safety guards:** Steps 1 and 4 will not overwrite existing files that already contain Part 1/2/3-classified data or real centroid rows. Pass `--force-mirta` to regenerate the installation database from scratch.
 
-H₀: Chinese-attributed AFIDA holdings are distributed across CONUS counties with no spatial relationship to military installation locations.
+### Obtain county centroids (one-time)
 
-### Monte Carlo Permutation Test
+```bash
+# Auto-download Census 2020 county centroids
+cd processed && bash download_centroids.sh
+```
 
-For each of N = 10,000 iterations, the script generates 123 random points uniformly within the CONUS bounding box (25°N–49°N, 125°W–66°W), computes Haversine distances to the nearest of 71 installations, and counts points within each threshold. The enrichment ratio is E(t) = C_obs / E[C_i].
+### Outputs
 
-### Multi-Threshold Analysis
-
-| Threshold | Policy Relevance |
-|-----------|-----------------|
-| 10 miles | Close proximity |
-| 25 miles | Operational surveillance range |
-| 50 miles | Primary analysis threshold |
-| 100 miles | CFIUS Tier 2 boundary |
-
-### Robustness Specifications
-
-1. **Installation subset sensitivity** — All 71 sites, military-only (50), nuclear-capable only (16)
-2. **Acreage weighting** — log(1 + acres) weighted proximity fractions
-3. **Agricultural land restriction** — Random points constrained to agricultural heartland
-4. **Panel analysis** — 2022-2024 temporal comparison
+| File | Rows | Description |
+|------|------|-------------|
+| `processed/cfius_appendix_a_geocoded.csv` | 247 | Installations with lat/lon, CONUS flag, Part 1/2/3 |
+| `processed/afida_2024_holdings.csv` | 49,548 | Normalised AFIDA entity records with `is_china` flag |
+| `processed/china_county_summary.csv` | 126 | China holdings aggregated to county level |
+| `processed/county_centroids.csv` | 3,352 | FIPS → (lat, lon) lookup |
 
 ---
 
-## Primary Results
+## Step 2 — Primary Analysis (`spatial_analysis_primary.py`)
 
-### Table 1: Multi-Threshold Spatial Correlation (China, n = 123 counties, N = 10,000)
+Produces all seven result tables. Runtime: ~3–5 minutes (vectorised; prior scalar implementation took ~20+ minutes).
 
-| Threshold | Observed | E(H₀) | Enrichment | p-value | Result |
-|-----------|----------|--------|------------|---------|--------|
-| ≤ 10 mi | 2 | 0.46 | 4.3× | 0.077 | Not significant |
-| ≤ 25 mi | 8 | 2.84 | 2.8× | 0.007 | Significant |
-| ≤ 50 mi | 37 | 10.78 | 3.4× | < 0.001 | Reject H₀ |
-| ≤ 100 mi | 81 | 36.34 | 2.2× | < 0.001 | Reject H₀ |
+```bash
+python spatial_analysis_primary.py \
+    --afida processed/afida_2024_holdings.csv \
+    --appendix-a processed/cfius_appendix_a_geocoded.csv \
+    --legacy data/installations_71.csv \
+    --centroids processed/county_centroids.csv \
+    --output results/
+```
 
-### Table 2: Multi-Country Comparison (50-mile threshold)
+### Output tables
 
-| Country | Category | Enrichment | p-value |
-|---------|----------|------------|---------|
-| China | Adversarial | 3.4× | < 0.001 |
-| Saudi Arabia | Adversarial-adj. | 2.6× | 0.005 |
-| Germany | Allied | 2.0× | < 0.001 |
-| United Kingdom | Allied | 1.9× | < 0.001 |
-| Canada | Allied | 1.8× | < 0.001 |
-| **Allied average** | **Baseline** | **1.8×** | |
-| Brazil | Americas (null) | 1.0× | 0.548 (NS) |
+| File | Content |
+|------|---------|
+| `results/data_summary.csv` | Table 1: Dataset scale, China distance statistics |
+| `results/primary_china_multithreshold.csv` | Table 2: Multi-threshold MC with ag-null and acreage-weighted columns |
+| `results/comparative_50mi.csv` | Table 3: 11-country comparative battery |
+| `results/installation_subset_sensitivity.csv` | Table 4: Appendix A / Part 2 / Nuclear / Legacy |
+| `results/panel_china_2022_2024.csv` | Table 5: Panel analysis with printed narrative |
+| `results/ownership_concentration.csv` | Table 6: HHI and top-10 entities |
+| `results/part3_icbm_analysis.csv` | Table 7: ICBM missile field county analysis |
+| `results/part3_adversarial_detail.csv` | Table 7b: Named adversarial holdings in Part 3 counties |
 
----
+### Table 2 columns
 
-## Files
-
-| File | Description |
-|------|-------------|
-| `webb_analysis.py` | Primary Monte Carlo analysis. CLI with configurable thresholds, iterations, seed, and multi-country mode |
-| `afida_primary_analysis.py` | AFIDA data loading, geocoding, and distance computation pipeline |
-| `robustness_checks.py` | Four robustness specifications |
-| `installations_71.csv` | 71 CONUS military installations and critical infrastructure sites |
-| `README.md` | This file |
-| `CITATION.cff` | Machine-readable citation metadata |
-| `LICENSE` | Apache 2.0 |
-
----
-
-## Installation Database
-
-71 CONUS sites across 15 categories:
-
-| Category | Count | Examples |
-|----------|-------|---------|
-| ICBM Fields | 3 | Minot, Malmstrom, F.E. Warren |
-| Bomber Bases | 4 | Whiteman, Barksdale, Dyess, Ellsworth |
-| Submarine Bases | 2 | Kings Bay, Kitsap-Bangor |
-| COCOM HQs | 3 | MacDill, Offutt, Peterson |
-| Army | 10 | Fort Liberty, Fort Cavazos, Fort Stewart |
-| Space Force | 5 | Buckley, Patrick, Schriever, Vandenberg, Peterson |
-| DOE Nuclear | 7 | Los Alamos, Sandia, Pantex, Y-12, Savannah River, INL, Hanford |
-| Intelligence | 4 | NSA Fort Meade, NGA, CIA Langley, DIA |
-| Defense Industry | 5 | Newport News, Bath Iron Works, etc. |
-| Other | 28 | ISR, fighter, naval, training, testing, depot |
+| Column | Description |
+|--------|-------------|
+| `enrichment` | Unweighted county-count enrichment ratio |
+| `p_value` | Empirical p-value (Davison-Hinkley +1 correction) |
+| `enrichment_ag_null` | Enrichment vs. agricultural-heartland null (28°N–48°N, 120°W–75°W) |
+| `p_value_ag_null` | p-value for agricultural null |
+| `enrichment_acreage_wtd` | County-level enrichment weighted by total acreage |
 
 ---
 
-## Data Sources
+## Step 3 — Legacy / Robustness Analysis (`webb_analysis.py`)
 
-Data files are **not included** in this repository. Users download directly from the authoritative government sources:
+Original framework running directly against the raw AFIDA Excel and the 70-site legacy database. No preprocessing required. Provides independent confirmation of the primary results.
 
-| Data | Source | URL |
-|------|--------|-----|
-| AFIDA Holdings (2020-2024) | USDA Farm Service Agency | fsa.usda.gov/resources/economic-policy-analysis/afida |
-| County Centroids | NOAA | weather.gov/gis/Counties |
+```bash
+# China only — 50-mile threshold, 10,000 iterations
+python webb_analysis.py \
+    --afida data/AFIDACurrentHoldingsYR2024.xlsx \
+    --centroids data/c_16ap26.zip \
+    --mc-iterations 10000 \
+    --threshold 50
 
-This design ensures: (1) users always have the most current data, (2) no redistribution of government datasets, and (3) all results are independently reproducible from primary sources.
+# Multi-country comparison
+python webb_analysis.py \
+    --afida data/AFIDACurrentHoldingsYR2024.xlsx \
+    --centroids data/c_16ap26.zip \
+    --all-countries \
+    --mc-iterations 5000
+
+# Specific threshold with fixed seed
+python webb_analysis.py \
+    --afida data/AFIDACurrentHoldingsYR2024.xlsx \
+    --centroids data/c_16ap26.zip \
+    --mc-iterations 10000 \
+    --threshold 25 \
+    --seed 20260322
+```
+
+Webb analysis uses the 70-site legacy database and produces the 3.4× result that appears as the "Legacy 70-site" robustness row in Table 4 of the primary analysis.
+
+---
+
+## Confirmed Results (April 25, 2026 production run)
+
+### Multi-threshold enrichment (Appendix A, 221 sites, N=10,000, n=126 counties)
+
+| Threshold | Observed | Expected | Enrichment | Ag-null | Acreage-wtd | p-value |
+|-----------|----------|----------|------------|---------|-------------|---------|
+| 10 mi | 6 | 1.54 | 3.9× | 3.1× | 0.58× | 0.0047 |
+| 25 mi | 24 | 8.26 | 2.9× | 2.3× | 0.74× | <0.001 |
+| **50 mi** | **57** | **23.54** | **2.4×** | **1.9×** | **3.58×** | **<0.001** |
+| 100 mi | 101 | 56.03 | 1.8× | 1.4× | 2.17× | <0.001 |
+
+### Comparative battery (50 mi, N=5,000)
+
+| Country | Type | Enrichment | p-value |
+|---------|------|------------|---------|
+| Iran | Adversarial | 5.3× | 0.007 (n=3†) |
+| Saudi Arabia | Adv-adjacent | 2.6× | <0.001 |
+| **China** | **Adversarial** | **2.4×** | **<0.001** |
+| Germany | Allied | 2.0× | <0.001 |
+| Japan | Comparator | 2.1× | <0.001 |
+| United Kingdom | Allied | 1.9× | <0.001 |
+| Canada | Allied | 1.8× | <0.001 |
+| Italy | Allied | 1.7× | <0.001 |
+| Netherlands | Allied | 1.6× | <0.001 |
+| Brazil | Comparator (null) | 1.1× | 0.48 (NS) |
+
+† Iran n=3 counties; result consistent with strategic proximity but statistically fragile.
+
+### Installation subset sensitivity (50 mi, N=10,000)
+
+| Database | Sites | Enrichment | p-value |
+|----------|-------|------------|---------|
+| Appendix A (primary) | 221 | 2.4× | <0.001 |
+| Appendix A Part 2 only | 72 | 2.3× | <0.001 |
+| Nuclear-capable | 66 | 0.6× | 0.890 (NS) |
+| **Legacy 70-site** | **70** | **3.4×** | **<0.001** |
+
+Legacy confirmed by `webb_analysis.py`: 37/123 counties, E(H₀)=10.7, 3.4×, p<0.001.
+
+### Panel (2022–2024)
+
+| Year | Counties | Acres | Mean dist (mi) | Within 50 mi |
+|------|----------|-------|----------------|--------------|
+| 2022 | 117 | 243,822 | 78.4 | 48.7% |
+| 2023 | 123 | 245,492 | 78.8 | 46.3% |
+| 2024 | 128 | 248,775 | 79.5 | 46.1% |
+
+Direction: **Expansion + Diffusion** — acreage +2.0%, counties +9.4%, mean distance +1.1 mi.
 
 ---
 
@@ -163,10 +228,13 @@ This design ensures: (1) users always have the most current data, (2) no redistr
 ```bibtex
 @article{green_spatial_clustering_2026,
   author  = {Green, Robert J.},
-  title   = {Spatial Clustering of Foreign Agricultural Acquisitions Near {U.S.} Military Installations: Comparative Evidence from {USDA} Primary Data},
+  title   = {Spatial Clustering of Foreign Agricultural Acquisitions Near {U.S.}
+             Military Installations: Comparative Evidence from {USDA} Primary Data
+             and Implications for Land Use Governance},
   year    = {2026},
-  journal = {SSRN Working Paper},
-  url     = {https://ssrn.com/author=10825096}
+  journal = {Land Use Policy (under review)},
+  doi     = {10.2139/ssrn.6454202},
+  url     = {https://doi.org/10.2139/ssrn.6454202}
 }
 ```
 
@@ -174,7 +242,7 @@ This design ensures: (1) users always have the most current data, (2) no redistr
 
 ## Related Projects
 
-- [**secmap**](https://github.com/rjgreenresearch/secmap) — Beneficial ownership chain tracing through SEC EDGAR filings
+- [**secmap**](https://github.com/rjgreenresearch/secmap) — Beneficial ownership chain tracing through SEC EDGAR (Article 2)
 - [**afida-parser**](https://github.com/rjgreenresearch/afida-parser) — AFIDA-to-SEC cross-reference and visibility gap analysis
 
 ---
@@ -182,5 +250,3 @@ This design ensures: (1) users always have the most current data, (2) no redistr
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).
-
-*The methodology in this repository was initially developed for the novel [Digital Harvest](https://www.digitalharvestbook.com) (The Silent Conquest Series) and subsequently validated against federal primary-source data.*
