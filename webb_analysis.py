@@ -23,7 +23,7 @@ Usage:
                           [--threshold 50]
 
 Author: Robert J. Green
-www.digitalharvestbook.com
+github.com/rjgreenresearch/afida-spatial-analysis
 ===============================================================================
 """
 
@@ -233,7 +233,7 @@ def main():
 
     print("=" * 78)
     print("  WEBB ANALYSIS — Spatial Clustering of Foreign Agricultural Holdings")
-    print("  Robert J. Green | www.digitalharvestbook.com")
+    print("  Robert J. Green | github.com/rjgreenresearch/afida-spatial-analysis")
     print("=" * 78)
 
     # Load data
@@ -325,7 +325,7 @@ def main():
 
     print(f"\n{'=' * 78}")
     print(f"  Analysis complete. All data from USDA AFIDA primary sources.")
-    print(f"  Robert J. Green | www.digitalharvestbook.com")
+    print(f"  Robert J. Green | github.com/rjgreenresearch/afida-spatial-analysis")
     print(f"{'=' * 78}")
 
 

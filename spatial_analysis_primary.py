@@ -7,8 +7,11 @@ Spatial Clustering Analysis -- Dual-Database Framework
 Article:  "Spatial Clustering of Foreign Agricultural Acquisitions Near U.S.
            Military Installations: Comparative Evidence from USDA Primary Data"
 
-Author:   Robert J. Green
-Target:   Spatial Economic Analysis (Taylor & Francis)
+Author:   Robert J. Green | robert@rjgreenresearch.org
+ORCID:    0009-0002-9097-1021
+Code:     https://github.com/rjgreenresearch/afida-spatial-analysis
+Target:   Land Use Policy (Elsevier)
+           [Revised from Spatial Economic Analysis, April 2026]
 
 Purpose:  Run Monte Carlo permutation testing against TWO installation databases:
           1. PRIMARY: 230 CFIUS Appendix A installations (192 CONUS)
@@ -142,7 +145,7 @@ PART3_COUNTIES = {
 # =============================================================================
 
 def haversine(lat1, lon1, lat2, lon2):
-    """Great-circle distance in miles using WGS-84 mean Earth radius."""
+    """Scalar great-circle distance in miles (WGS-84). Kept for Part 3 logic."""
     R = 3958.8
     lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
     dlat = lat2 - lat1
@@ -152,17 +155,27 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 def min_distances(holdings_df, installations_df):
-    """Compute minimum distance from each holding to nearest installation."""
-    dists = []
-    for _, h in holdings_df.iterrows():
-        min_d = float('inf')
-        for _, inst in installations_df.iterrows():
-            d = haversine(h['latitude'], h['longitude'],
-                          inst['latitude'], inst['longitude'])
-            if d < min_d:
-                min_d = d
-        dists.append(min_d)
-    return np.array(dists)
+    """
+    Vectorised minimum distance from each holding county to nearest installation.
+
+    Uses numpy broadcasting for ~200x speedup over the scalar loop.
+    Shape: (n_holdings, n_installations) distance matrix -> row-wise min.
+    """
+    R = 3958.8
+    h_lat = np.radians(holdings_df['latitude'].values)
+    h_lon = np.radians(holdings_df['longitude'].values)
+    i_lat = np.radians(installations_df['latitude'].values)
+    i_lon = np.radians(installations_df['longitude'].values)
+
+    # Broadcasting: (n_hold, 1) - (1, n_inst)
+    dlat = i_lat[np.newaxis, :] - h_lat[:, np.newaxis]
+    dlon = i_lon[np.newaxis, :] - h_lon[:, np.newaxis]
+
+    a = (np.sin(dlat / 2) ** 2
+         + np.cos(h_lat[:, np.newaxis]) * np.cos(i_lat[np.newaxis, :])
+         * np.sin(dlon / 2) ** 2)
+    d = 2 * R * np.arcsin(np.sqrt(np.clip(a, 0, 1)))  # (n_hold, n_inst)
+    return d.min(axis=1)
 
 
 # =============================================================================
@@ -181,22 +194,28 @@ def monte_carlo_test(n_holdings, installations_df, threshold, n_iter,
     inst_lons = installations_df['longitude'].values
     n_inst = len(inst_lats)
     
-    mc_counts = np.zeros(n_iter)
-    
+    # Precompute installation coords in radians once
+    i_lat_r = np.radians(inst_lats)
+    i_lon_r = np.radians(inst_lons)
+    R = 3958.8
+    mc_counts = np.zeros(n_iter, dtype=np.int32)
+
     for i in range(n_iter):
-        rand_lats = np.random.uniform(lat_range[0], lat_range[1], n_holdings)
-        rand_lons = np.random.uniform(lon_range[0], lon_range[1], n_holdings)
-        
-        count = 0
-        for k in range(n_holdings):
-            for j in range(n_inst):
-                d = haversine(rand_lats[k], rand_lons[k],
-                              inst_lats[j], inst_lons[j])
-                if d <= threshold:
-                    count += 1
-                    break
-        mc_counts[i] = count
-    
+        rand_lats_r = np.radians(
+            np.random.uniform(lat_range[0], lat_range[1], n_holdings))
+        rand_lons_r = np.radians(
+            np.random.uniform(lon_range[0], lon_range[1], n_holdings))
+
+        # Vectorised: shape (n_holdings, n_inst)
+        dlat = i_lat_r[np.newaxis, :] - rand_lats_r[:, np.newaxis]
+        dlon = i_lon_r[np.newaxis, :] - rand_lons_r[:, np.newaxis]
+        a = (np.sin(dlat / 2) ** 2
+             + np.cos(rand_lats_r[:, np.newaxis])
+             * np.cos(i_lat_r[np.newaxis, :])
+             * np.sin(dlon / 2) ** 2)
+        dists = 2 * R * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+        mc_counts[i] = int(np.any(dists <= threshold, axis=1).sum())
+
     return {
         'expected': mc_counts.mean(),
         'std': mc_counts.std(),
@@ -217,6 +236,29 @@ def compute_enrichment(observed, mc_result, n_iter):
         'std': mc_result['std'],
         'max_under_h0': mc_result['max'],
     }
+
+def monte_carlo_test_agricultural(n_holdings, installations_df, threshold, n_iter,
+                                   lat_range=None, lon_range=None):
+    """
+    Agricultural-land-restricted Monte Carlo.
+
+    Uses AG_LAT / AG_LON bounds (defined at top of file) to restrict
+    random point placement to the agricultural heartland rather than
+    the full CONUS bounding box.
+
+    This is the most conservative robustness check: military installations
+    are also concentrated in rural/agricultural areas, so enrichment that
+    persists against this null is genuinely country-specific rather than
+    a geographic artefact.
+    """
+    if lat_range is None:
+        lat_range = AG_LAT
+    if lon_range is None:
+        lon_range = AG_LON
+    return monte_carlo_test(n_holdings, installations_df, threshold,
+                             n_iter, lat_range=lat_range, lon_range=lon_range)
+
+
 
 
 # =============================================================================
@@ -497,23 +539,46 @@ def run_china_multithreshold(china_holdings, installations_df, n_iter=MC_PRIMARY
     n = len(china_holdings)
     results = []
     
+    # Acreage weights (for weighted enrichment column)
+    acres_col = next((c for c in china_holdings.columns if 'acreage' in c.lower()
+                      or c.lower() == 'acres'), None)
+    weights = None
+    if acres_col:
+        w = china_holdings[acres_col].astype(float, errors='ignore').fillna(0).values
+        total = w.sum()
+        weights = w / total if total > 0 else None
+
     for t in DISTANCE_THRESHOLDS:
         observed = int(np.sum(distances <= t))
         mc = monte_carlo_test(n, installations_df, t, n_iter)
         er = compute_enrichment(observed, mc, n_iter)
-        
+
+        # Acreage-weighted enrichment: fraction of total acreage within threshold
+        # vs expected fraction under random placement
+        w_enrichment = None
+        if weights is not None:
+            obs_w_frac  = weights[distances <= t].sum()
+            exp_w_frac  = er['expected'] / n   # expected fraction of counties
+            w_enrichment = round(obs_w_frac / exp_w_frac, 2) if exp_w_frac > 0 else None
+
+        # Agricultural-restricted robustness
+        mc_ag = monte_carlo_test_agricultural(n, installations_df, t, n_iter)
+        er_ag = compute_enrichment(observed, mc_ag, n_iter)
+
         results.append({
-            'threshold_miles': t,
-            'observed': observed,
-            'expected': round(er['expected'], 2),
-            'std': round(er['std'], 2),
-            'enrichment': round(er['enrichment'], 1),
-            'p_value': er['p_value'],
-            'significant': 'Yes' if er['p_value'] < 0.001 else (
-                'Yes' if er['p_value'] < 0.01 else (
-                    'Yes' if er['p_value'] < 0.05 else 'No'
-                )),
-            'n_counties': n,
+            'threshold_miles':        t,
+            'observed':               observed,
+            'expected':               round(er['expected'], 2),
+            'std':                    round(er['std'], 2),
+            'enrichment':             round(er['enrichment'], 1),
+            'p_value':                er['p_value'],
+            'significant':            ('Yes' if er['p_value'] < 0.001 else
+                                       'Yes' if er['p_value'] < 0.01 else
+                                       'Yes' if er['p_value'] < 0.05 else 'No'),
+            'enrichment_ag_null':     round(er_ag['enrichment'], 1),
+            'p_value_ag_null':        er_ag['p_value'],
+            'enrichment_acreage_wtd': w_enrichment,
+            'n_counties':             n,
         })
     
     return pd.DataFrame(results)
@@ -672,6 +737,38 @@ def run_panel_analysis(afida_path, centroids_df, installations_df,
         result.to_csv(out_path, index=False)
         print(result.to_string(index=False))
         print(f"\n  -> {out_path}")
+        # Print the correct panel narrative based on actual direction of change
+        if len(result) >= 2:
+            first, last = result.iloc[0], result.iloc[-1]
+            d_acres  = last['total_acres'] - first['total_acres']
+            d_dist   = last['mean_distance'] - first['mean_distance']
+            d_pct50  = last['pct_within_50mi'] - first['pct_within_50mi']
+            print(f"\n  Panel narrative ({result['year'].iloc[0]}–{result['year'].iloc[-1]}):")
+            print(f"    Acreage change:   {d_acres:+,.0f} ac  "
+                  f"({'increase' if d_acres >= 0 else 'decrease'})")
+            print(f"    Mean dist change: {d_dist:+.1f} mi  "
+                  f"({'away from' if d_dist >= 0 else 'toward'} installations)")
+            print(f"    Pct within 50mi:  {d_pct50:+.1f} pp")
+            print()
+            if d_acres >= 0 and d_dist >= 0:
+                print("    Direction: EXPANSION + DIFFUSION")
+                print("    Interpretation: Holdings grew in acreage and county count.")
+                print("    Mean distance from installations increased slightly.")
+                print("    State-level bans and CFIUS expansion have NOT reduced the")
+                print("    aggregate Chinese-attributed agricultural footprint.")
+                print("    NOTE: This panel uses cumulative holdings from the 2024 AFIDA")
+                print("    file. For a true annual snapshot panel, use separate AFIDA")
+                print("    annual files for each year to capture divestments.")
+            elif d_acres < 0 and d_dist < 0:
+                print("    Direction: CONTRACTION + CONCENTRATION")
+                print("    Interpretation: Holdings fell overall but remaining holdings")
+                print("    moved closer to installations — consistent with selective")
+                print("    divestment of distant holdings while proximate ones persist.")
+            elif d_acres >= 0 and d_dist < 0:
+                print("    Direction: EXPANSION + CONCENTRATION (most significant)")
+                print("    Interpretation: Holdings grew AND moved closer to installations.")
+            else:
+                print("    Direction: CONTRACTION + DIFFUSION")
     else:
         print("  No panel data generated.")
     return result

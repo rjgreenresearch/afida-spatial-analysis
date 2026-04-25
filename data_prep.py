@@ -113,6 +113,10 @@ def convert_mirta(geojson_path, output_dir):
         
         # Normalize isFirrmaSite (handle Yes/yes/tbd/No)
         is_firrma_raw = str(props.get('isFirrmaSite', 'No'))
+        # 'tbd' = site is on Appendix A but classification is pending.
+        # Treat as 'Yes' (included) — consistent with original MIRTA pipeline.
+        # These sites ARE listed in the Federal Register Appendix A text;
+        # the 'tbd' flag reflects MIRTA metadata lag, not genuine exclusion.
         is_firrma = 'Yes' if is_firrma_raw.lower() in ('yes', 'tbd') else 'No'
         current_part = '2' if is_firrma == 'Yes' else 'none'
         
@@ -149,6 +153,24 @@ def convert_mirta(geojson_path, output_dir):
     firrma_conus = [r for r in firrma_rows if r['conus'] == 'Y']
     
     out_path_firrma = os.path.join(output_dir, 'cfius_appendix_a_geocoded.csv')
+
+    # SAFETY: if an existing geocoded file already has Part 1/2/3 classification
+    # (i.e., current_part has values other than just '2' and 'none'), preserve it.
+    # Re-running data_prep.py with a different MIRTA source would otherwise lose
+    # manually curated or merge_part_classification()-enriched part assignments.
+    if os.path.exists(out_path_firrma):
+        import csv as _csv
+        with open(out_path_firrma, encoding='latin-1') as _f:
+            _existing = list(_csv.DictReader(_f))
+        _existing_parts = set(r.get('current_part','') for r in _existing
+                              if r.get('conus','').upper() == 'Y')
+        _existing_conus = sum(1 for r in _existing if r.get('conus','').upper()=='Y')
+        if _existing_conus >= len(firrma_conus) and '1' in _existing_parts:
+            print(f"    SAFETY: existing cfius_appendix_a_geocoded.csv has "
+                  f"{_existing_conus} CONUS sites with Part 1/2/3 classification.")
+            print(f"    Keeping existing file. Pass --force-mirta to regenerate.")
+            return firrma_rows
+
     with open(out_path_firrma, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -294,6 +316,264 @@ def merge_legacy(firrma_rows, legacy_path, output_dir):
     print(f"    -> {out_path}")
     
     return merged
+
+
+# ----------------------------------------------------------
+# 1c. Merge Part 1/2/3 classification into geocoded file
+# ----------------------------------------------------------
+
+# Explicit name mappings for MIRTA abbreviations not caught by fuzzy matching
+MIRTA_TO_ECFR = {
+    # MIRTA name (lower)                : eCFR name (exact)
+    'aberdeen pg':                        'Aberdeen Proving Ground',
+    'army research lab - orlando simulations and training technology center':
+                                          'Army Research Lab - Orlando',
+    'army research lab - raleigh durham': 'Army Research Lab - Raleigh Durham Research Triangle Park',
+    'avon park afr':                      'Avon Park Air Force Range',
+    'bangor wa':                          'Naval Base Kitsap - Bangor',
+    'bath iron works':                    'Bath Iron Works',
+    'boeing st. louis':                   'Boeing St. Louis',
+    'camp pendleton':                     'Marine Corps Base Camp Pendleton',
+    'dugway pg':                          'Dugway Proving Ground',
+    'ellsworth afb site 2':               'Ellsworth Air Force Base',
+    'iowa ng jfhq':                       'Iowa National Guard Joint Force Headquarters',
+    'keyport nuwc':                       'Naval Undersea Warfare Center Division Keyport',
+    'lockheed martin marietta':           'Lockheed Martin Aeronautics Marietta',
+    'luke air force auxiliary field no 1':'Luke Air Force Base',
+    'luke waste annex':                   'Luke Air Force Base',
+    'nas corpus christi':                 'Naval Air Station Corpus Christi',
+    'nas jacksonville':                   'Naval Air Station Jacksonville',
+    'nas kingsville':                     'Naval Air Station Kingsville',
+    'naval base ventura county- port hueneme operating facility':
+                                          'Naval Base Ventura County',
+    'naval surface warfare center carderock division Ã¢â¬â acoustic research detachment':
+                                          'Naval Surface Warfare Center Carderock Division',
+    'ng camp dodge johnston ts':          'Iowa National Guard Joint Force Headquarters',
+    'u.s. army natick soldier systems center': 'Army Natick Soldier Systems Center',
+    # Additional mappings confirmed from classification file lookup
+    'bangor wa':                          'Naval Base Kitsap Bangor',
+    'keyport nuwc':                       'Naval Base Kitsap - Keyport',
+    'naval base ventura county- port hueneme operating facility':
+                                          'Naval Base Ventura County - Port Hueneme',
+    'naval surface warfare center carderock division Ã¢â¬â acoustic research detachment':
+                                          'Naval Surface Warfare Center Carderock Division - ARD',
+    'ng camp dodge johnston ts':          'Camp Dodge',
+    'white sands mr':                     'White Sands Missile Range',
+}
+
+# DOE/NNSA nuclear weapons complex sites: Part 2 (100-mile threshold)
+# Source: 31 CFR Part 802 Appendix A -- these sites appear in Federal Register
+# text but are absent from the MIRTA database used to build the geocoded CSV.
+DOE_SITES_PART2 = {
+    'hanford site',
+    'idaho nl',
+    'idaho national laboratory',
+    'los alamos nl',
+    'los alamos national laboratory',
+    'pantex plant',
+    'savannah river site',
+    'y-12 nsc',
+    'y-12 national security complex',
+}
+
+# Sites in MIRTA geocoded file but NOT in appendix_a_part_classification.csv.
+# Part assigned from Federal Register text review.
+# Part 1 = 1-mile threshold; Part 2 = 100-mile threshold
+MIRTA_ONLY_PARTS = {
+    # Part 2: submarine / strategic nuclear-adjacent
+    'bangor wa':                 2,   # Naval Base Kitsap Bangor (SSBN homeport)
+    # Part 1: all others
+    'army research lab - raleigh durham': 1,
+    'avon park afr':             1,
+    'bath iron works':           1,
+    'boeing st. louis':          1,
+    'dugway pg':                 1,
+    'iowa ng jfhq':              1,
+    'lockheed martin marietta':  1,
+    'nas jacksonville':          1,
+    'nas kingsville':            1,
+    'u.s. army natick soldier systems center': 1,
+}
+
+
+def merge_part_classification(geocoded_path, classification_path, output_path=None):
+    """
+    Merge Part 1/2/3 classification from appendix_a_part_classification.csv
+    into cfius_appendix_a_geocoded.csv.
+
+    Three-tier matching strategy:
+      Tier 1 -- Explicit MIRTA_TO_ECFR name map (highest confidence)
+      Tier 2 -- Fuzzy name match (SequenceMatcher >= 0.80 on normalised names)
+      Tier 3 -- Coordinate proximity (<= 5 miles)
+
+    Unmatched sites default to Part 1 (1-mile threshold) -- most conservative.
+    Known DOE sites not in classification file are assigned Part 2 (100 miles).
+
+    Updates current_part column in geocoded file.
+    Writes to output_path (or overwrites geocoded_path if output_path is None).
+
+    Returns (updated_df, match_report_df).
+    """
+    import re
+    import csv
+    import math
+    from difflib import SequenceMatcher
+
+    def _norm(s):
+        """Normalise site name for fuzzy comparison."""
+        s = s.lower().strip()
+        s = re.sub(r"\bair force base\b", "afb", s)
+        s = re.sub(r"\bnaval air station\b", "nas", s)
+        s = re.sub(r"\bmarine corps base\b", "mcb", s)
+        s = re.sub(r"\bfort\b", "fort", s)
+        s = re.sub(r"\([^)]*\)", "", s)   # remove parentheticals
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _hav(lat1, lon1, lat2, lon2):
+        R = 3958.8
+        lat1,lon1,lat2,lon2 = map(math.radians, [lat1,lon1,lat2,lon2])
+        dlat=lat2-lat1; dlon=lon2-lon1
+        a = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
+        return 2*R*math.asin(math.sqrt(a))
+
+    def _fuzzy(a, b):
+        return SequenceMatcher(None, a, b).ratio()
+
+    # Load files
+    geocoded = []
+    with open(geocoded_path, encoding='latin-1') as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        for row in reader:
+            geocoded.append(dict(row))
+
+    classif = []
+    with open(classification_path, encoding='latin-1') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            classif.append(dict(row))
+
+    # Pre-compute normalised names and coords for classification rows
+    c_norm  = [_norm(c['ecfr_name']) for c in classif]
+    c_lats  = [float(c['latitude'])  if c.get('latitude')  else None for c in classif]
+    c_lons  = [float(c['longitude']) if c.get('longitude') else None for c in classif]
+
+    match_report = []
+    n_matched   = 0
+    n_unmatched = 0
+
+    for row in geocoded:
+        if row.get('conus', '').upper() != 'Y':
+            continue   # only CONUS sites need reclassification
+
+        site = row['site_name']
+        site_l = site.lower().strip()
+
+        # Tier 0a: Sites in MIRTA but absent from classification file (hardcoded)
+        if site_l in MIRTA_ONLY_PARTS:
+            row['current_part'] = str(MIRTA_ONLY_PARTS[site_l])
+            match_report.append({
+                'site_name': site, 'matched_to': f"hardcoded Part {MIRTA_ONLY_PARTS[site_l]}",
+                'part': MIRTA_ONLY_PARTS[site_l], 'method': 'mirta_only_hardcode'})
+            n_matched += 1
+            continue
+
+        # Tier 0b: Known DOE sites not in classification file
+        if site_l in DOE_SITES_PART2:
+            row['current_part'] = '2'
+            match_report.append({
+                'site_name': site, 'matched_to': 'DOE Part 2 (hardcoded)',
+                'part': 2, 'method': 'doe_hardcode'})
+            n_matched += 1
+            continue
+
+        # Tier 1: explicit MIRTA→eCFR map
+        matched_row = None
+        method = None
+        if site_l in MIRTA_TO_ECFR:
+            ecfr_target = MIRTA_TO_ECFR[site_l]
+            for i, c in enumerate(classif):
+                if c['ecfr_name'].lower().strip() == ecfr_target.lower().strip():
+                    matched_row = c
+                    method = 'explicit_map'
+                    break
+
+        # Tier 2: fuzzy name match
+        if matched_row is None:
+            site_n = _norm(site)
+            best_score, best_idx = 0.0, None
+            for i, cn in enumerate(c_norm):
+                s = _fuzzy(site_n, cn)
+                if s > best_score:
+                    best_score, best_idx = s, i
+            if best_score >= 0.80:
+                matched_row = classif[best_idx]
+                method = f'fuzzy({best_score:.2f})'
+
+        # Tier 3: coordinate proximity <= 5 miles
+        if matched_row is None:
+            try:
+                g_lat = float(row['latitude'])
+                g_lon = float(row['longitude'])
+                best_dist, best_idx = float('inf'), None
+                for i, (clat, clon) in enumerate(zip(c_lats, c_lons)):
+                    if clat is not None and clon is not None:
+                        d = _hav(g_lat, g_lon, clat, clon)
+                        if d < best_dist:
+                            best_dist, best_idx = d, i
+                if best_dist <= 5.0:
+                    matched_row = classif[best_idx]
+                    method = f'coord({best_dist:.1f}mi)'
+            except (ValueError, TypeError):
+                pass
+
+        if matched_row is not None:
+            row['current_part'] = str(int(float(matched_row['part'])))
+            if 'threshold_miles' not in row or not row['threshold_miles']:
+                row['threshold_miles'] = str(matched_row['threshold_miles'])
+            match_report.append({
+                'site_name': site,
+                'matched_to': matched_row['ecfr_name'],
+                'part': int(float(matched_row['part'])),
+                'method': method,
+            })
+            n_matched += 1
+        else:
+            # Default to Part 1 (most conservative)
+            row['current_part'] = '1'
+            match_report.append({
+                'site_name': site, 'matched_to': None,
+                'part': 1, 'method': 'default_part1'})
+            n_unmatched += 1
+
+    # Add threshold_miles to fieldnames if not present
+    if 'threshold_miles' not in fieldnames:
+        fieldnames = list(fieldnames) + ['threshold_miles']
+
+    out = output_path or geocoded_path
+    with open(out, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(geocoded)
+
+    print(f"  Part classification merged: {n_matched} matched, "
+          f"{n_unmatched} defaulted to Part 1")
+    print(f"  -> {out}")
+
+    # Summary of part distribution
+    part_counts = {1: 0, 2: 0, 3: 0}
+    for row in geocoded:
+        if row.get('conus', '').upper() == 'Y':
+            try:
+                part_counts[int(row['current_part'])] += 1
+            except (ValueError, KeyError):
+                pass
+    print(f"  CONUS Part distribution: Part 1: {part_counts[1]}, "
+          f"Part 2: {part_counts[2]}, Part 3: {part_counts[3]}")
+
+    return geocoded, match_report
+
 
 
 # ----------------------------------------------------------
@@ -524,6 +804,15 @@ def generate_centroids_stub(output_dir):
     print("\n[3] County centroids...")
     
     stub_path = os.path.join(output_dir, 'county_centroids.csv')
+
+    # SAFETY: never overwrite an existing file that already has real data.
+    # Re-running data_prep.py must not destroy a populated centroids file.
+    if os.path.exists(stub_path):
+        with open(stub_path, encoding='utf-8', errors='ignore') as _f:
+            real_lines = [l for l in _f if l.strip() and not l.strip().startswith('#')]
+        if real_lines:
+            print(f"    county_centroids.csv already populated ({len(real_lines):,} data rows) — skipping stub generation.")
+            return
     
     instructions = """# County Centroids Lookup Table
 # 
@@ -669,6 +958,9 @@ Examples:
                         help='Path to AFIDA 2024 holdings Excel (.xlsx)')
     parser.add_argument('--legacy', default=None,
                         help='Path to legacy installations CSV (71 sites, optional)')
+    parser.add_argument('--force-mirta', action='store_true', dest='force_mirta',
+                        help='Regenerate cfius_appendix_a_geocoded.csv even if '
+                             'a classified version already exists (use carefully)')
     parser.add_argument('--output', default='./processed',
                         help='Output directory (default: ./processed)')
     
@@ -686,6 +978,17 @@ Examples:
     convert_afida(args.afida, args.output)
     generate_centroids_stub(args.output)
     validate_outputs(args.output)
+    
+    # Merge Part 1/2/3 classification into geocoded file
+    geocoded_path = os.path.join(args.output, 'cfius_appendix_a_geocoded.csv')
+    classif_path  = os.path.join(args.output, 'appendix_a_part_classification.csv')
+    if os.path.exists(classif_path):
+        print("\n[5] Merging Part 1/2/3 classification...")
+        merge_part_classification(geocoded_path, classif_path)
+    else:
+        print("\n[5] appendix_a_part_classification.csv not found in output dir.")
+        print("    Copy it there and re-run data_prep.py, or merge manually.")
+        print("    Expected path:", classif_path)
     
     print("\n" + "=" * 60)
     print("  NEXT STEPS")
