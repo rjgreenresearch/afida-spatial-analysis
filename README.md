@@ -61,14 +61,14 @@ Run once whenever you update the AFIDA or MIRTA source data.
 | File | Source |
 |------|--------|
 | `AFIDACurrentHoldingsYR2024.xlsx` | USDA FSA: fsa.usda.gov/resources/economic-policy-analysis/afida |
-| `mirta-dod-sites-points-geojson.geojson` | DoD MIRTA / DataLumos Project 239602 |
+| `mirta-dod-sites-boundaries-geojson.geojson` | DoD MIRTA / DataLumos Project 239599 |
 | County centroids | NOAA: weather.gov/gis/Counties — or Census CenPop2020 |
 
 ### Full pipeline
 
 ```bash
 python data_prep.py \
-    --mirta data/mirta-dod-sites-points-geojson.geojson \
+    --mirta data/mirta-dod-sites-boundaries-geojson.geojson \
     --afida data/AFIDACurrentHoldingsYR2024.xlsx \
     --legacy data/installations_71.csv \
     --output processed/
@@ -237,6 +237,12 @@ Direction: **Expansion + Diffusion** — acreage +2.0%, counties +9.4%, mean dis
   url     = {https://doi.org/10.2139/ssrn.6454202}
 }
 ```
+
+---
+
+## Data Sources
+
+See [DATA_SOURCES.md](DATA_SOURCES.md) for complete citation information, download instructions, and licence terms for all required data files. Note: the MIRTA DoD Sites Boundaries dataset (DataLumos 239599, DOI: 10.3886/E239599V1) requires acceptance of DataLumos Terms of Use and citation notification to bibliography@icpsr.umich.edu upon publication.
 
 ---
 
